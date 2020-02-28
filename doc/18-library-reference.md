@@ -54,6 +54,29 @@ true
 false
 ```
 
+### regex\_submatch <a id="global-functions-regex_submatch"></a>
+
+Signature:
+
+```
+function regex_submatch(pattern, value)
+```
+
+Returns an array of submatches if the regular expression `pattern` matches the `value`, null otherwise.
+
+Examples:
+
+```
+$ icinga2 console
+Icinga 2 (version: v2.13.0)
+<1> => regex_submatch("foo", "bar")
+null
+<2> => regex_submatch("foo", "foo")
+[ "foo" ]
+<3> => regex_submatch("f(o)o", "foo")
+[ "foo", "o" ]
+```
+
 ### match <a id="global-functions-match"></a>
 
 Signature:
