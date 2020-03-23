@@ -149,6 +149,7 @@ private:
 
 #ifdef _WIN32
 	static int MksTemp (char *tmpl);
+	static char* MkdTemp(char *tmpl);
 #endif /* _WIN32 */
 
 #ifdef I2_DEBUG
