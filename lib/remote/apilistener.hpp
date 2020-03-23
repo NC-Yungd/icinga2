@@ -198,8 +198,8 @@ private:
 	static void ConfigGlobHandler(ConfigDirInformation& config, const String& path, const String& file);
 
 	static void TryActivateZonesStageCallback(const ProcessResult& pr,
-		const std::vector<String>& relativePaths);
-	static void AsyncTryActivateZonesStage(const std::vector<String>& relativePaths);
+		const std::vector<String>& relativePaths, const String& apiZonesStageDir);
+	static void AsyncTryActivateZonesStage(const std::vector<String>& relativePaths, const String& apiZonesStageDir);
 
 	static String GetChecksum(const String& content);
 	static bool CheckConfigChange(const ConfigDirInformation& oldConfig, const ConfigDirInformation& newConfig);

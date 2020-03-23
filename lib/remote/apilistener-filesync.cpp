@@ -11,6 +11,7 @@
 #include "base/application.hpp"
 #include "base/exception.hpp"
 #include "base/utility.hpp"
+#include <boost/filesystem.hpp>
 #include <fstream>
 #include <iomanip>
 
@@ -310,11 +311,6 @@ Value ApiListener::ConfigUpdateHandler(const MessageOrigin::Ptr& origin, const D
 		return Empty;
 	}
 
-	/* Only one transaction is allowed, concurrent message handlers need to wait.
-	 * This affects two parent endpoints sending the config in the same moment.
-	 */
-	boost::mutex::scoped_lock lock(m_ConfigSyncStageLock);
-
 	String apiZonesStageDir = GetApiZonesStageDir();
 	String fromEndpointName = origin->FromClient->GetEndpoint()->GetName();
 	String fromZoneName = GetFromZoneName(origin->FromZone);
@@ -339,16 +335,8 @@ Value ApiListener::ConfigUpdateHandler(const MessageOrigin::Ptr& origin, const D
 	// Keep track of the relative config paths for later validation and copying. TODO: Find a better algorithm.
 	std::vector<String> relativePaths;
 
-	/*
-	 * We can and must safely purge the staging directory, as the difference is taken between
-	 * runtime production config and newly received configuration.
-	 * This is needed to not mix deleted/changed content between received and stage
-	 * config.
-	 */
-	if (Utility::PathExists(apiZonesStageDir))
-		Utility::RemoveDirRecursive(apiZonesStageDir);
-
 	Utility::MkDirP(apiZonesStageDir, 0700);
+	apiZonesStageDir = Utility::CreateTempDir(apiZonesStageDir + Convert::ToString(Utility::GetTime()) + "-XXXXXX", 0700) + "/";
 
 	// Analyse and process the update.
 	size_t count = 0;
@@ -380,7 +368,7 @@ Value ApiListener::ConfigUpdateHandler(const MessageOrigin::Ptr& origin, const D
 
 		// Put the received configuration into our stage directory.
 		String productionConfigZoneDir = GetApiZonesDir() + zoneName;
-		String stageConfigZoneDir = GetApiZonesStageDir() + zoneName;
+		String stageConfigZoneDir = apiZonesStageDir + zoneName;
 
 		Utility::MkDirP(productionConfigZoneDir, 0700);
 		Utility::MkDirP(stageConfigZoneDir, 0700);
@@ -521,11 +509,13 @@ Value ApiListener::ConfigUpdateHandler(const MessageOrigin::Ptr& origin, const D
 		Log(LogInformation, "ApiListener")
 			<< "Received configuration updates (" << count << ") from endpoint '" << fromEndpointName
 			<< "' are different to production, triggering validation and reload.";
-		AsyncTryActivateZonesStage(relativePaths);
+		AsyncTryActivateZonesStage(relativePaths, apiZonesStageDir);
 	} else {
 		Log(LogInformation, "ApiListener")
 			<< "Received configuration updates (" << count << ") from endpoint '" << fromEndpointName
 			<< "' are equal to production, skipping validation and reload.";
+
+		Utility::RemoveDirRecursive(apiZonesStageDir);
 	}
 
 	return Empty;
@@ -541,10 +531,10 @@ Value ApiListener::ConfigUpdateHandler(const MessageOrigin::Ptr& origin, const D
  * @param relativePaths Collected paths including the zone name, which are copied from stage to current directories.
  */
 void ApiListener::TryActivateZonesStageCallback(const ProcessResult& pr,
-	const std::vector<String>& relativePaths)
+	const std::vector<String>& relativePaths, const String& apiZonesStageDir)
 {
+	namespace fs = boost::filesystem;
 	String apiZonesDir = GetApiZonesDir();
-	String apiZonesStageDir = GetApiZonesStageDir();
 
 	String logFile = apiZonesStageDir + "/startup.log";
 	std::ofstream fpLog(logFile.CStr(), std::ofstream::out | std::ostream::binary | std::ostream::trunc);
@@ -561,26 +551,21 @@ void ApiListener::TryActivateZonesStageCallback(const ProcessResult& pr,
 		Log(LogInformation, "ApiListener")
 			<< "Config validation for stage '" << apiZonesStageDir << "' was OK, replacing into '" << apiZonesDir << "' and triggering reload.";
 
-		// Purge production before copying stage.
-		if (Utility::PathExists(apiZonesDir))
-			Utility::RemoveDirRecursive(apiZonesDir);
+		{
+			auto azsd (fs::path(apiZonesStageDir.GetData()).parent_path());
+			auto azd (fs::path(apiZonesDir.GetData()).parent_path());
+			boost::mutex::scoped_lock lock(m_ConfigSyncStageLock);
 
-		Utility::MkDirP(apiZonesDir, 0700);
+			// Purge production before copying stage.
+			if (fs::exists(azd)) {
+				if (fs::is_symlink(azd)) {
+					fs::remove_all(fs::read_symlink(azd));
+				}
 
-		// Copy all synced configuration files from stage to production.
-		for (const String& path : relativePaths) {
-			if (!Utility::PathExists(apiZonesStageDir + path))
-				continue;
+				fs::remove_all(azd);
+			}
 
-			Log(LogInformation, "ApiListener")
-				<< "Copying file '" << path << "' from config sync staging to production zones directory.";
-
-			String stagePath = apiZonesStageDir + path;
-			String currentPath = apiZonesDir + path;
-
-			Utility::MkDirP(Utility::DirName(currentPath), 0700);
-
-			Utility::CopyFile(stagePath, currentPath);
+			fs::create_symlink(azsd, azd);
 		}
 
 		// Clear any failed deployment before
@@ -604,6 +589,8 @@ void ApiListener::TryActivateZonesStageCallback(const ProcessResult& pr,
 
 	if (listener)
 		listener->UpdateLastFailedZonesStageValidation(pr.Output);
+
+	Utility::RemoveDirRecursive(apiZonesStageDir);
 }
 
 /**
@@ -612,7 +599,7 @@ void ApiListener::TryActivateZonesStageCallback(const ProcessResult& pr,
  *
  * @param relativePaths Required for later file operations in the callback. Provides the zone name plus path in a list.
  */
-void ApiListener::AsyncTryActivateZonesStage(const std::vector<String>& relativePaths)
+void ApiListener::AsyncTryActivateZonesStage(const std::vector<String>& relativePaths, const String& apiZonesStageDir)
 {
 	VERIFY(Application::GetArgC() >= 1);
 
@@ -634,11 +621,11 @@ void ApiListener::AsyncTryActivateZonesStage(const std::vector<String>& relative
 
 	// Set the ZonesStageDir. This creates our own local chroot without any additional automated zone includes.
 	args->Add("--define");
-	args->Add("System.ZonesStageVarDir=" + GetApiZonesStageDir());
+	args->Add("System.ZonesStageVarDir=" + apiZonesStageDir);
 
 	Process::Ptr process = new Process(Process::PrepareCommand(args));
 	process->SetTimeout(Application::GetReloadTimeout());
-	process->Run(std::bind(&TryActivateZonesStageCallback, _1, relativePaths));
+	process->Run(std::bind(&TryActivateZonesStageCallback, _1, relativePaths, apiZonesStageDir));
 }
 
 /**
