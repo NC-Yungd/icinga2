@@ -129,6 +129,7 @@ public:
 	static String ValidateUTF8(const String& input);
 
 	static String CreateTempFile(const String& path, int mode, std::fstream& fp);
+	static String CreateTempDir(const String& path, int mode);
 
 #ifdef _WIN32
 	static String GetIcingaInstallPath();

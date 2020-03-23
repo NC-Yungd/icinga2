@@ -1711,6 +1711,31 @@ String Utility::CreateTempFile(const String& path, int mode, std::fstream& fp)
 	return resultPath;
 }
 
+String Utility::CreateTempDir(const String& path, int mode)
+{
+	auto targetPath (path.GetData());
+
+#ifndef _WIN32
+	if (!mkdtemp(&targetPath[0])) {
+#else /* _WIN32 */
+	if (!MkdTemp(&targetPath[0])) {
+#endif /*_WIN32*/
+		BOOST_THROW_EXCEPTION(posix_error()
+			<< boost::errinfo_api_function("mkdtemp")
+			<< boost::errinfo_errno(errno)
+			<< boost::errinfo_file_name(path));
+	}
+
+	if (chmod(targetPath.c_str(), mode) < 0) {
+		BOOST_THROW_EXCEPTION(posix_error()
+			<< boost::errinfo_api_function("chmod")
+			<< boost::errinfo_errno(errno)
+			<< boost::errinfo_file_name(targetPath));
+	}
+
+	return std::move(targetPath);
+}
+
 #ifdef _WIN32
 /* mkstemp extracted from libc/sysdeps/posix/tempname.c and mkdtemp derived from it.
  * Copyright (C) 1991-1999, 2000, 2001, 2006 Free Software Foundation, Inc.
